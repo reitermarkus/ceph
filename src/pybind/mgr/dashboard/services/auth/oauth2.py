@@ -73,35 +73,27 @@ class OAuth2(SSOAuth):
 
     @classmethod
     def set_token_payload(cls, token):
+        cherrypy.request.jwt_token = token
         cherrypy.request.jwt_payload = decode_jwt_segment(token.split(".")[1])
 
     @classmethod
-    def get_user_roles(cls):
-        roles: List[str] = []
-        user_roles: List[Role] = []
-        try:
-            jwt_payload = cherrypy.request.jwt_payload
-        except AttributeError:
-            raise cherrypy.HTTPError(401)
+    def get_user_roles(cls, user_info) -> List[Role]:
+        roles: List[Role] = []
 
         if jmespath and getattr(mgr.SSO_DB.config, 'roles_path', None):
             logger.debug("Using 'roles_path' to fetch roles")
-            roles = jmespath.search(mgr.SSO_DB.config.roles_path, jwt_payload)
+            roles = jmespath.search(mgr.SSO_DB.config.roles_path, user_info) or []
         # e.g Keycloak
-        elif 'resource_access' in jwt_payload or 'realm_access' in jwt_payload:
+        elif 'resource_access' in user_info or 'realm_access' in user_info:
             logger.debug("Using 'resource_access' or 'realm_access' to fetch roles")
             roles = jmespath.search(
                 "resource_access.*[?@!='account'].roles[] || realm_access.roles[]",
-                jwt_payload)
-        elif 'roles' in jwt_payload:
+                user_info) or []
+        elif 'roles' in user_info:
             logger.debug("Using 'roles' to fetch roles")
-            roles = jwt_payload['roles']
-            if isinstance(roles, str):
-                roles = [roles]
-        else:
-            raise cherrypy.HTTPError(403)
-        user_roles = Role.map_to_system_roles(roles or [])
-        return user_roles
+            roles = [user_info['roles']] if isinstance(user_info['roles'], str) else [user_info['roles']]
+
+        return Role.map_to_system_roles(roles)
 
     @classmethod
     def get_user(cls, token: str) -> User:
@@ -118,17 +110,40 @@ class OAuth2(SSOAuth):
             jwt_payload = cherrypy.request.jwt_payload
         except AttributeError:
             raise cherrypy.HTTPError()
+
+        name = jwt_payload.get('name', None)
+        email = jwt_payload.get('email', None)
+        roles = cls.get_user_roles(jwt_payload)
+
+        if name is None or email is None or len(roles) == 0:
+            user_info = cls.get_user_info()
+            if name is None:
+                name = user_info.get('name', None)
+            if email is None:
+                email = user_info.get('email', None)
+            if len(roles) == 0:
+                roles = cls.get_user_roles(user_info)
+
+        # No point in creating a user without any roles.
+        if len(roles) == 0:
+            raise cherrypy.HTTPError(403)
+
         try:
-            user = mgr.ACCESS_CTRL_DB.create_user(
-                jwt_payload['sub'], None,
-                jwt_payload.get('name', None), jwt_payload.get('email', None))
+            user = mgr.ACCESS_CTRL_DB.create_user(jwt_payload['sub'], None, name, email)
         except UserAlreadyExists:
             logger.debug("User already exists")
             user = mgr.ACCESS_CTRL_DB.get_user(jwt_payload['sub'])
         except KeyError as e:
             raise cherrypy.HTTPError(500, f'Invalid token payload: {e}')
 
-        user.set_roles(cls.get_user_roles())
+        # with open('/var/log/ceph/debug.log', 'a+') as f:
+        #     f.write(f"user_name: {user_name}\n")
+        #     f.write(f"user_email: {user_email}\n")
+        #     f.write(f"user_roles: {[user_role.name for user_role in user_roles]}\n")
+
+        user.name = name
+        user.email = email
+        user.set_roles(roles)
         # set user last update to token time issued
         user.last_update = jwt_payload.get('iat', 0)
         cherrypy.request.user = user
@@ -156,6 +171,21 @@ class OAuth2(SSOAuth):
         return cls.get_token_payload()['iss']
 
     @classmethod
+    def get_user_info(cls):
+        msg = 'Failed to get user info: could not contact IDP'
+        openid_config = cls.get_openid_config(cls.get_token_iss())
+        userinfo_endpoint = openid_config.get('userinfo_endpoint')
+
+        try:
+            response = requests.get(userinfo_endpoint, headers={'Authorization': f'Bearer {token}'})
+        except requests.exceptions.RequestException as e:
+            raise cherrypy.HTTPError(500, message=f"{msg}: {e}")
+        if response.status_code != 200:
+            raise cherrypy.HTTPError(500, message=f"{msg}: Status code: {response.status_code}")
+
+        return json.loads(response.text)
+
+    @classmethod
     def get_openid_config(cls, iss):
         msg = 'Failed to logout: could not contact IDP'
         try:
@@ -173,7 +203,7 @@ class OAuth2(SSOAuth):
 
     @classmethod
     def get_logout_redirect_url(cls, token) -> str:
-        openid_config = OAuth2.get_openid_config(OAuth2.get_token_iss(token))
+        openid_config = cls.get_openid_config(cls.get_token_iss(token))
         end_session_url = openid_config.get('end_session_endpoint')
         encoded_end_session_url = quote(end_session_url, safe="")
         url_prefix = prepare_url_prefix(mgr.get_module_option('url_prefix', default=''))
