@@ -172,10 +172,15 @@ class OAuth2(SSOAuth):
 
     @classmethod
     def get_user_info(cls):
-        msg = 'Failed to get user info: could not contact IDP'
         openid_config = cls.get_openid_config(cls.get_token_iss())
         userinfo_endpoint = openid_config.get('userinfo_endpoint')
 
+        try:
+            token = cherrypy.request.jwt_token
+        except AttributeError:
+            raise cherrypy.HTTPError(401)
+
+        msg = 'Failed to get user info: could not contact IDP'
         try:
             response = requests.get(userinfo_endpoint, headers={'Authorization': f'Bearer {token}'})
         except requests.exceptions.RequestException as e:
