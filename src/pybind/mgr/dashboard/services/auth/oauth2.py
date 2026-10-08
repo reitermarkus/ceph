@@ -109,7 +109,7 @@ class OAuth2(SSOAuth):
         try:
             jwt_payload = cherrypy.request.jwt_payload
         except AttributeError:
-            raise cherrypy.HTTPError()
+            raise cherrypy.HTTPError(401)
 
         name = jwt_payload.get('name', None)
         email = jwt_payload.get('email', None)
@@ -124,7 +124,7 @@ class OAuth2(SSOAuth):
             if len(roles) == 0:
                 roles = cls.get_user_roles(user_info)
 
-        # No point in creating a user without any roles.
+        # Forbid access for users without any roles.
         if len(roles) == 0:
             raise cherrypy.HTTPError(403)
 
@@ -136,10 +136,10 @@ class OAuth2(SSOAuth):
         except KeyError as e:
             raise cherrypy.HTTPError(500, f'Invalid token payload: {e}')
 
-        # with open('/var/log/ceph/debug.log', 'a+') as f:
-        #     f.write(f"user_name: {user_name}\n")
-        #     f.write(f"user_email: {user_email}\n")
-        #     f.write(f"user_roles: {[user_role.name for user_role in user_roles]}\n")
+        with open('/var/log/ceph/debug.log', 'a+') as f:
+            f.write(f"user_name: {user_name}\n")
+            f.write(f"user_email: {user_email}\n")
+            f.write(f"user_roles: {[user_role.name for user_role in user_roles]}\n")
 
         user.name = name
         user.email = email
