@@ -137,9 +137,9 @@ class OAuth2(SSOAuth):
             raise cherrypy.HTTPError(500, f'Invalid token payload: {e}')
 
         with open('/var/log/ceph/debug.log', 'a+') as f:
-            f.write(f"user_name: {user_name}\n")
-            f.write(f"user_email: {user_email}\n")
-            f.write(f"user_roles: {[user_role.name for user_role in user_roles]}\n")
+            f.write(f"_create_user name: {name}\n")
+            f.write(f"_create_user email: {email}\n")
+            f.write(f"_create_user roles: {[role.name for role in roles]}\n")
 
         user.name = name
         user.email = email
